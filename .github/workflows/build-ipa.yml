@@ -1,4 +1,4 @@
-name: Build Unsigned IPA
+name: Build Unsigned IPA (iOS 26)
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
 
 jobs:
   build:
-    name: Build Unsigned Real-Device IPA
-    runs-on: macos-15
+    name: Build Unsigned Real-Device IPA (iOS 26)
+    runs-on: macos-15   # Required for newest Xcode / iOS SDK
 
     env:
       SCHEME: ANEMLLChat
@@ -21,41 +21,35 @@ jobs:
       IPA_DIR: ${{ github.workspace }}/build/ipa
 
     steps:
-      # ── 1. Checkout ────────────────────────────────────────────────────────
+      # ── 1. Checkout ─────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # ── 2. Pin Xcode 16.2 and install iOS 18.2 platform ───────────────────
-      # The macos-15 runner ships Xcode but NOT the iOS device support files.
-      # xcodebuild will refuse generic/platform=iOS without them.
-      - name: Select Xcode 16.2
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+      # ── 2. Select Latest Xcode (must contain iOS 26 SDK) ───────
+      - name: Set up latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: 'latest'
 
-      - name: Install iOS 18.2 platform
+      # ── 3. Verify iOS 26 SDK Exists ─────────────────────────────
+      - name: Confirm iOS 26 SDK
         run: |
-          xcodebuild -downloadPlatform iOS
-        # This can take 3-5 minutes but is required for generic/platform=iOS
+          xcodebuild -showsdks
+          xcodebuild -version
 
-      - name: Confirm iOS platform installed
-        run: xcodebuild -showsdks | grep iphoneos
-
-      # ── 3. Pre-generate the missing xcconfig ──────────────────────────────
-      # The project references ANEMLLChat/generated-build-number.xcconfig as
-      # a base configuration. Its "Set Build Number from Git" run-script phase
-      # normally creates it, but Xcode resolves base configs before scripts run.
+      # ── 4. Generate build-number xcconfig ───────────────────────
       - name: Generate build-number xcconfig
         run: |
           BUILD_NUMBER=$(git rev-list --count HEAD)
           XCCONFIG_PATH="${{ github.workspace }}/ANEMLLChat/generated-build-number.xcconfig"
           echo "CURRENT_PROJECT_VERSION = ${BUILD_NUMBER}" > "$XCCONFIG_PATH"
           echo "MARKETING_VERSION = 1.0.0"                >> "$XCCONFIG_PATH"
-          echo "✅ Written $XCCONFIG_PATH"
           cat "$XCCONFIG_PATH"
 
-      # ── 4. Resolve Swift Package Manager dependencies ──────────────────────
+      # ── 5. Resolve Swift Packages ───────────────────────────────
       - name: Resolve SPM packages
         run: |
           xcodebuild \
@@ -64,13 +58,14 @@ jobs:
             -resolvePackageDependencies \
             -derivedDataPath "${{ env.DERIVED_DATA }}"
 
-      # ── 5. Archive targeting generic iOS device (arm64, unsigned) ─────────
-      - name: Archive (unsigned)
+      # ── 6. Archive for Generic iOS Device (iOS 26 SDK) ─────────
+      - name: Archive (unsigned, iOS 26)
         run: |
           xcodebuild archive \
             -project           "${{ env.PROJECT_PATH }}" \
             -scheme            "${{ env.SCHEME }}" \
             -configuration     "${{ env.CONFIGURATION }}" \
+            -sdk               iphoneos \
             -destination       "generic/platform=iOS" \
             -archivePath       "${{ env.ARCHIVE_PATH }}" \
             -derivedDataPath   "${{ env.DERIVED_DATA }}" \
@@ -81,29 +76,28 @@ jobs:
             ONLY_ACTIVE_ARCH=NO \
             SKIP_INSTALL=NO
 
-      # ── 6. Package .app → unsigned .ipa ───────────────────────────────────
+      # ── 7. Package .app → .ipa ─────────────────────────────────
       - name: Package IPA
         run: |
           APP_PATH=$(find "${{ env.ARCHIVE_PATH }}/Products/Applications" \
             -maxdepth 1 -name "*.app" | head -1)
 
           if [ -z "$APP_PATH" ]; then
-            echo "❌ No .app found in archive. Listing archive:"
+            echo "No .app found in archive."
             find "${{ env.ARCHIVE_PATH }}" -maxdepth 4
             exit 1
           fi
 
-          echo "✅ Found: $APP_PATH"
           mkdir -p "${{ env.IPA_DIR }}/Payload"
           cp -R "$APP_PATH" "${{ env.IPA_DIR }}/Payload/"
           cd "${{ env.IPA_DIR }}"
           zip -r ANEMLLChat.ipa Payload
           ls -lh ANEMLLChat.ipa
 
-      # ── 7. Upload IPA as workflow artifact ────────────────────────────────
+      # ── 8. Upload Artifact ──────────────────────────────────────
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ANEMLLChat-unsigned-${{ github.sha }}
+          name: ANEMLLChat-unsigned-iOS26-${{ github.sha }}
           path: ${{ env.IPA_DIR }}/ANEMLLChat.ipa
           retention-days: 14
